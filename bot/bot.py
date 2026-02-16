@@ -29,7 +29,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 # ── Conversation states ───────────────────────────────────────────
-(APPT_DOCTOR, APPT_DATE, APPT_NOTES) = range(3)
+(APPT_DOCTOR, APPT_SLOT, APPT_NOTES) = range(3)
 (PROF_NAME, PROF_PHONE, PROF_DOB)    = range(3, 6)
 
 # ── DB helpers ────────────────────────────────────────────────────
@@ -151,32 +151,131 @@ async def my_appointments(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_MENU)
 
+# ── Get Doctors ─────────────────────────────────
+def get_doctors() -> list:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM doctors WHERE is_active = TRUE ORDER BY name ASC"
+        )
+        return [row["name"] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
 # ── Book Appointment conversation ─────────────────────────────────
 async def book_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    doctors = get_doctors()
+
+    # Build keyboard rows — 2 doctors per row
+    rows = []
+    for i in range(0, len(doctors), 2):
+        rows.append([KeyboardButton(d) for d in doctors[i:i+2]])
+
+    # Add "Other" and "Cancel" at the bottom
+    rows.append([KeyboardButton("✏️ Other (type manually")])
+    rows.append([KeyboardButton(BTN_CANCEL)])
+
     await update.message.reply_text(
-        "🩺 *Step 1 of 4* — Which doctor would you like to see?\n\nType the doctor's name:",
+        "🩺 *Step 1 of 3* — Select a doctor or tap ✏️ Other to type a name:",
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(BTN_CANCEL)]],
-            resize_keyboard=True,
-        ),
+        reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
     )
     return APPT_DOCTOR
 
 async def book_doctor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.message.text == BTN_CANCEL:
         return await cancel(update, ctx)
-    ctx.user_data["doctor"] = update.message.text.strip()
+
+    text = update.message.text.strip()
+
+    if text == "✏️ Other (type manually)":
+        await update.message.reply_text(
+            "✏️ Type the doctor's name:",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton(BTN_CANCEL)]],
+                resize_keyboard=True,
+            ),
+        )
+        ctx.user_data["awaiting_manual_doctor"] = True
+        return APPT_DOCTOR
+
+    ctx.user_data["doctor"] = text
+    ctx.user_data.pop("awaiting_manual_doctor", None)
+
+    # Fetch available slots for this doctor
+    slots = get_available_slots(text)
+
+    if not slots:
+        await send_menu(
+            update,
+            f"😔 No available slots for Dr. {text} in the next 30 days.\n"
+            "Please try another doctor or check back later."
+        )
+        return ConversationHandler.END
+
+    # Store slots in context so we can look them up by button label
+    ctx.user_data["slots"] = {
+        s.strftime("%a %d %b · %H:%M"): s for s in slots
+    }
+
+    # Build keyboard — 2 slots per row
+    slot_labels = list(ctx.user_data["slots"].keys())
+    rows = []
+    for i in range(0, len(slot_labels), 2):
+        rows.append([KeyboardButton(s) for s in slot_labels[i:i+2]])
+    rows.append([KeyboardButton(BTN_CANCEL)])
+
     await update.message.reply_text(
-        "📅 *Step 2 of 3* — Enter your preferred date and time:\n"
-        "Format: `YYYY-MM-DD HH:MM`  e.g. `2025-03-20 14:30`",
+        f"📅 *Step 2 of 3* — Available slots for *Dr. {text}*:\n\n"
+        "Tap a slot to select it:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
+    )
+    return APPT_SLOT
+
+async def book_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == BTN_CANCEL:
+        return await cancel(update, ctx)
+
+    selected_label = update.message.text.strip()
+    slots = ctx.user_data.get("slots", {})
+
+    if selected_label not in slots:
+        await update.message.reply_text(
+            "⚠️ Please tap one of the available slot buttons.",
+        )
+        return APPT_SLOT
+
+    ctx.user_data["date"] = slots[selected_label]
+
+    await update.message.reply_text(
+        f"✅ Slot selected: *{selected_label}*\n\n"
+        "📝 *Step 3 of 3* — Any notes? (tap `none` to skip)",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(BTN_CANCEL)]],
+            [[KeyboardButton("none")], [KeyboardButton(BTN_CANCEL)]],
             resize_keyboard=True,
         ),
     )
-    return APPT_DATE
+    return APPT_NOTES
+
+def get_available_slots(doctor_name: str) -> list:
+    """Return available slots for a doctor in the next 30 days."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT slot_time FROM available_slots
+            WHERE doctor_name = %s
+            ORDER BY slot_time ASC
+            """,
+            (doctor_name,),
+        )
+        return [row["slot_time"] for row in cur.fetchall()]
+    finally:
+        conn.close()
 
 async def book_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.message.text == BTN_CANCEL:
@@ -334,7 +433,7 @@ def main():
         ],
         states={
             APPT_DOCTOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_doctor)],
-            APPT_DATE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, book_date)],
+            APPT_SLOT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, book_slot)],
             APPT_NOTES:  [MessageHandler(filters.TEXT & ~filters.COMMAND, book_notes)],
         },
         fallbacks=[
