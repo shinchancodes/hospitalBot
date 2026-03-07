@@ -172,12 +172,11 @@ async def book_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(doctors), 2):
         rows.append([KeyboardButton(d) for d in doctors[i:i+2]])
 
-    # Add "Other" and "Cancel" at the bottom
-    rows.append([KeyboardButton("✏️ Other (type manually")])
+    # Add "Cancel" at the bottom
     rows.append([KeyboardButton(BTN_CANCEL)])
 
     await update.message.reply_text(
-        "🩺 *Step 1 of 3* — Select a doctor or tap ✏️ Other to type a name:",
+        "🩺 *Step 1 of 3* — Select a doctor",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
     )
@@ -189,20 +188,8 @@ async def book_doctor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    if text == "✏️ Other (type manually)":
-        await update.message.reply_text(
-            "✏️ Type the doctor's name:",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton(BTN_CANCEL)]],
-                resize_keyboard=True,
-            ),
-        )
-        ctx.user_data["awaiting_manual_doctor"] = True
-        return APPT_DOCTOR
-
     ctx.user_data["doctor"] = text
-    ctx.user_data.pop("awaiting_manual_doctor", None)
-
+    
     # Fetch available slots for this doctor
     slots = get_available_slots(text)
 
