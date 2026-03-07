@@ -145,7 +145,7 @@ async def my_appointments(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for r in past:
             emoji = "✅" if r["status"] == "completed" else "❌"
             msg += (
-                f"  {emoji} Dr. {r['doctor']} — {r['hospital']}\n"
+                f"  {emoji} Dr. {r['doctor']}\n"
                 f"  📅 {r['appointment_date'].strftime('%b %d, %Y at %H:%M')}\n\n"
             )
 
