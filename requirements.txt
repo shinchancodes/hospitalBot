@@ -1,4 +1,4 @@
-python-telegram-bot==20.7
-psycopg2-binary
-streamlit
-pandas
+python-telegram-bot==21.11
+psycopg2-binary==2.9.11
+streamlit==1.54.0
+pandas==2.3.3
