@@ -301,6 +301,26 @@ async def book_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        
+        # Check if slot is already booked for this doctor and time
+        cur.execute(
+            """
+            SELECT id FROM appointments
+            WHERE doctor = %s
+              AND appointment_date = %s
+              AND status = 'scheduled'
+            """,
+            (d["doctor"], d["date"]),
+        )
+        if cur.fetchone():
+            conn.close()
+            await send_menu(
+                update,
+                "⚠️ That time slot is already taken for this doctor.\n"
+                "Please tap 📅 Book Appointment and choose a different time."
+            )
+            return ConversationHandler.END
+        
         cur.execute(
             """
             INSERT INTO appointments (patient_id, doctor, appointment_date, notes)
