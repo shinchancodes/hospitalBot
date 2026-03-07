@@ -90,8 +90,10 @@ def load_patients():
             ORDER BY created_at DESC
         """)
         rows = cur.fetchall()
-        # Convert RealDictCursor rows to proper DataFrame
-        df = pd.DataFrame(rows)
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['id', 'telegram_id', 'full_name', 'phone', 'date_of_birth', 'notes', 'is_active', 'created_at'])
         return df
     finally:
         conn.close()
@@ -112,7 +114,10 @@ def load_appointments():
             ORDER BY a.appointment_date DESC
         """)
         rows = cur.fetchall()
-        df = pd.DataFrame(rows)
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['id', 'patient', 'phone', 'doctor', 'appointment_date', 'status', 'notes', 'created_at'])
         return df
     finally:
         conn.close()
@@ -128,7 +133,10 @@ def load_doctors():
             ORDER BY name ASC
         """)
         rows = cur.fetchall()
-        df = pd.DataFrame(rows)
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['id', 'name', 'specialty', 'is_active', 'created_at'])
         return df
     finally:
         conn.close()
@@ -145,7 +153,10 @@ def load_slots():
             ORDER BY ds.slot_time ASC
         """)
         rows = cur.fetchall()
-        df = pd.DataFrame(rows)
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['id', 'doctor', 'slot_time', 'is_active'])
         return df
     finally:
         conn.close()
@@ -162,7 +173,10 @@ def load_doctors_for_slots():
             ORDER BY name
         """)
         rows = cur.fetchall()
-        df = pd.DataFrame(rows)
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['id', 'name'])
         return df
     finally:
         conn.close()
