@@ -31,6 +31,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 # ── Conversation states ───────────────────────────────────────────
 (APPT_DOCTOR, APPT_SLOT, APPT_NOTES) = range(3)
 (PROF_NAME, PROF_PHONE, PROF_DOB)    = range(3, 6)
+(RESCHEDULE_CONFIRM, RESCHEDULE_DOCTOR, RESCHEDULE_SLOT, RESCHEDULE_NOTES) = range(6, 10)
 
 # ── DB helpers ────────────────────────────────────────────────────
 def get_conn():
@@ -302,6 +303,30 @@ async def book_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         cur = conn.cursor()
         
+        # Check if patient already has an active appointment
+        cur.execute(
+            """
+            SELECT id FROM appointments
+            WHERE patient_id = %s
+              AND status = 'scheduled'
+            """,
+            (patient_id,),
+        )
+        if cur.fetchone():
+            conn.close()
+            await update.message.reply_text(
+                "⚠️ You already have an active appointment.\n"
+                "Would you like to reschedule it?",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("✅ Yes, reschedule"), KeyboardButton("❌ No, cancel")]],
+                    resize_keyboard=True,
+                ),
+            )
+            ctx.user_data["pending_new_doctor"] = d["doctor"]
+            ctx.user_data["pending_new_date"] = d["date"]
+            ctx.user_data["pending_new_notes"] = notes
+            return RESCHEDULE_CONFIRM
+        
         # Check if slot is already booked for this doctor and time
         cur.execute(
             """
@@ -344,6 +369,154 @@ async def book_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             update,
             "⚠️ That time slot is already taken for this doctor.\n"
             "Please tap 📅 Book Appointment and choose a different time."
+        )
+    except Exception as e:
+        conn.rollback()
+        await send_menu(update, f"❌ Something went wrong: {e}")
+    finally:
+        conn.close()
+
+    ctx.user_data.clear()
+    return ConversationHandler.END
+
+# ── Reschedule Appointment conversation ───────────────────────────
+async def reschedule_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "❌ No, cancel":
+        ctx.user_data.clear()
+        await send_menu(update, "❌ Action cancelled. Your current appointment remains unchanged.")
+        return ConversationHandler.END
+    
+    if update.message.text != "✅ Yes, reschedule":
+        await update.message.reply_text(
+            "Please tap one of the options:",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("✅ Yes, reschedule"), KeyboardButton("❌ No, cancel")]],
+                resize_keyboard=True,
+            ),
+        )
+        return RESCHEDULE_CONFIRM
+    
+    doctors = get_doctors()
+    rows = []
+    for i in range(0, len(doctors), 2):
+        rows.append([KeyboardButton(d) for d in doctors[i:i+2]])
+    rows.append([KeyboardButton(BTN_CANCEL)])
+
+    await update.message.reply_text(
+        "🩺 *Step 1 of 3* — Select a new doctor:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
+    )
+    return RESCHEDULE_DOCTOR
+
+async def reschedule_doctor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == BTN_CANCEL:
+        ctx.user_data.clear()
+        await send_menu(update, "❌ Reschedule cancelled.")
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    ctx.user_data["reschedule_doctor"] = text
+    
+    slots = get_available_slots(text)
+
+    if not slots:
+        await send_menu(
+            update,
+            f"😔 No available slots for Dr. {text} in the next 30 days.\n"
+            "Please try another doctor or check back later."
+        )
+        return ConversationHandler.END
+
+    ctx.user_data["reschedule_slots"] = {
+        s.strftime("%a %d %b · %H:%M"): s for s in slots
+    }
+
+    slot_labels = list(ctx.user_data["reschedule_slots"].keys())
+    rows = []
+    for i in range(0, len(slot_labels), 2):
+        rows.append([KeyboardButton(s) for s in slot_labels[i:i+2]])
+    rows.append([KeyboardButton(BTN_CANCEL)])
+
+    await update.message.reply_text(
+        f"📅 *Step 2 of 3* — Available slots for *Dr. {text}*:\n\n"
+        "Tap a slot to select it:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
+    )
+    return RESCHEDULE_SLOT
+
+async def reschedule_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == BTN_CANCEL:
+        ctx.user_data.clear()
+        await send_menu(update, "❌ Reschedule cancelled.")
+        return ConversationHandler.END
+
+    selected_label = update.message.text.strip()
+    slots = ctx.user_data.get("reschedule_slots", {})
+
+    if selected_label not in slots:
+        await update.message.reply_text(
+            "⚠️ Please tap one of the available slot buttons.",
+        )
+        return RESCHEDULE_SLOT
+
+    ctx.user_data["reschedule_date"] = slots[selected_label]
+
+    await update.message.reply_text(
+        f"✅ Slot selected: *{selected_label}*\n\n"
+        "📝 *Step 3 of 3* — Any notes? (tap `none` to skip)",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("none")], [KeyboardButton(BTN_CANCEL)]],
+            resize_keyboard=True,
+        ),
+    )
+    return RESCHEDULE_NOTES
+
+async def reschedule_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == BTN_CANCEL:
+        ctx.user_data.clear()
+        await send_menu(update, "❌ Reschedule cancelled.")
+        return ConversationHandler.END
+    
+    notes = update.message.text.strip()
+    notes = None if notes.lower() == "none" else notes
+    user = update.effective_user
+    patient_id = get_or_create_patient(user.id, user.full_name)
+    
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        
+        # Cancel old appointment
+        cur.execute(
+            """
+            UPDATE appointments
+            SET status = 'cancelled'
+            WHERE patient_id = %s AND status = 'scheduled'
+            """,
+            (patient_id,),
+        )
+        
+        # Create new appointment
+        cur.execute(
+            """
+            INSERT INTO appointments (patient_id, doctor, appointment_date, notes)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (patient_id, ctx.user_data["reschedule_doctor"], ctx.user_data["reschedule_date"], notes),
+        )
+        conn.commit()
+        
+        await update.message.reply_text(
+            f"✅ *Appointment Rescheduled!*\n\n"
+            f"🩺 Dr. {ctx.user_data['reschedule_doctor']}\n"
+            f"📅 {ctx.user_data['reschedule_date'].strftime('%B %d, %Y at %H:%M')}\n"
+            f"📝 {notes or 'No notes'}\n\n"
+            "Use 📋 My Appointments to view all your bookings.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_MENU,
         )
     except Exception as e:
         conn.rollback()
@@ -442,6 +615,10 @@ def main():
             APPT_DOCTOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_doctor)],
             APPT_SLOT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, book_slot)],
             APPT_NOTES:  [MessageHandler(filters.TEXT & ~filters.COMMAND, book_notes)],
+            RESCHEDULE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, reschedule_confirm)],
+            RESCHEDULE_DOCTOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reschedule_doctor)],
+            RESCHEDULE_SLOT:    [MessageHandler(filters.TEXT & ~filters.COMMAND, reschedule_slot)],
+            RESCHEDULE_NOTES:   [MessageHandler(filters.TEXT & ~filters.COMMAND, reschedule_notes)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
